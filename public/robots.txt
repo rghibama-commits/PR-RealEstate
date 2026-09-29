@@ -1,0 +1,26 @@
+# ==============================================================================
+# PR Real Estate - Search Engine Directives
+# Allow public portfolio discovery while strictly protecting private admin areas
+# ==============================================================================
+
+User-agent: *
+Allow: /
+Allow: /assets/
+Allow: /properties
+Allow: /offplan
+Allow: /mortgage-calculator
+Allow: /sell
+Allow: /about
+Allow: /contact
+
+# Strictly disallow indexing of private CRM, staff login, and backend admin endpoints
+Disallow: /admin/
+Disallow: /admin
+Disallow: /#/admin/
+Disallow: /#/admin
+Disallow: /api/admin/
+Disallow: /api/auth/
+Disallow: /api/status
+
+# Sitemap
+Sitemap: https://pr-realestate.ae/sitemap.xml
