@@ -33,13 +33,19 @@ export function clearStaffSession() {
 
 export function getAuthHeaders() {
   const session = getStaffSession();
-  return {
-    'Content-Type': 'application/json',
-    'x-user-role': session?.user?.role || 'Director',
-    'x-user-username': session?.user?.username || 'admin',
-    'x-user-agent-id': session?.user?.agentId != null ? String(session.user.agentId) : '',
-    'x-user-fullname': session?.user?.fullName || 'Jay'
+  const headers = {
+    'Content-Type': 'application/json'
   };
+  if (session?.token) {
+    headers['Authorization'] = `Bearer ${session.token}`;
+  }
+  if (session?.user) {
+    headers['x-user-role'] = session.user.role;
+    headers['x-user-username'] = session.user.username;
+    headers['x-user-agent-id'] = session.user.agentId != null ? String(session.user.agentId) : '';
+    headers['x-user-fullname'] = session.user.fullName || '';
+  }
+  return headers;
 }
 
 /* --------------------------------------------------------------------------
@@ -153,7 +159,7 @@ export async function pollAdminNotifications() {
         notifList.innerHTML = `<li class="notif-item" style="color: #888; font-size: 0.75rem; text-align: center; padding: 1.5rem;">No new unread leads</li>`;
       } else {
         notifList.innerHTML = data.recent.map(item => `
-          <li class="notif-item ${!item.isSeen ? 'unread' : ''}" onclick="window.prApp.handleNotificationClick('${item.ref}')">
+          <li class="notif-item ${!item.isSeen ? 'unread' : ''}" onclick="window.prApp.handleNotificationClick(decodeURIComponent('${encodeURIComponent(item.ref)}'))">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
               <strong style="font-size: 0.78rem; color: var(--color-charcoal);">${escapeHtml(item.firstName)} ${escapeHtml(item.lastName || '')}</strong>
               <span class="badge-${(item.temperature || 'WARM').toLowerCase()}">${item.temperature || 'WARM'}</span>
@@ -1304,8 +1310,8 @@ export async function renderAdminInventory() {
           </td>
           <td style="text-align: right;">
             <div style="display: flex; gap: 0.4rem; justify-content: flex-end;">
-              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem;" onclick="window.prApp.openEditPropertyModal('${p.slug}')">Edit</button>
-              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem; color: #D32F2F;" onclick="window.prApp.deleteProperty('${p.slug}')">Remove</button>
+              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem;" onclick="window.prApp.openEditPropertyModal(decodeURIComponent('${encodeURIComponent(p.slug)}'))">Edit</button>
+              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem; color: #D32F2F;" onclick="window.prApp.deleteProperty(decodeURIComponent('${encodeURIComponent(p.slug)}'))">Remove</button>
             </div>
           </td>
         </tr>
@@ -1328,8 +1334,8 @@ export async function renderAdminInventory() {
           <td style="font-size: 0.75rem; max-width: 200px;">${escapeHtml(proj.paymentPlan || '70/30')}</td>
           <td style="text-align: right;">
             <div style="display: flex; gap: 0.4rem; justify-content: flex-end;">
-              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem;" onclick="window.prApp.openEditProjectModal('${proj.slug}')">Edit</button>
-              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem; color: #D32F2F;" onclick="window.prApp.deleteProject('${proj.slug}')">Remove</button>
+              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem;" onclick="window.prApp.openEditProjectModal(decodeURIComponent('${encodeURIComponent(proj.slug)}'))">Edit</button>
+              <button class="btn btn-charcoal-outline" style="padding: 0.35rem 0.75rem; font-size: 0.65rem; color: #D32F2F;" onclick="window.prApp.deleteProject(decodeURIComponent('${encodeURIComponent(proj.slug)}'))">Remove</button>
             </div>
           </td>
         </tr>

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import {
   initDatabase,
   getDatabaseStatus,
@@ -33,9 +34,30 @@ import {
 } from './db.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// 1. Security Headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+// 2. CORS configuration (allowing local dev & staging)
+const allowedOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000', 'https://pr-realestate.ae'];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 
 // Initialize Database connection on boot
@@ -44,18 +66,27 @@ initDatabase().catch(err => {
 });
 
 /* --------------------------------------------------------------------------
-   ANTI-SPAM RATE LIMITING (Blocks rapid submissions)
+   ANTI-SPAM RATE LIMITING (Blocks rapid submissions & prunes old entries)
    -------------------------------------------------------------------------- */
 const requestLog = new Map();
 
 function rateLimiter(req, res, next) {
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'client';
+  const ip = req.ip || req.socket.remoteAddress || 'client';
   const now = Date.now();
   const windowMs = 60 * 1000; // 60 seconds
   const maxRequests = 5;
 
   const history = requestLog.get(ip) || [];
   const recent = history.filter(ts => now - ts < windowMs);
+
+  // Prune expired entries to prevent memory leak
+  if (requestLog.size > 1000) {
+    for (const [key, timestamps] of requestLog.entries()) {
+      if (timestamps.every(ts => now - ts >= windowMs)) {
+        requestLog.delete(key);
+      }
+    }
+  }
 
   if (recent.length >= maxRequests) {
     return res.status(429).json({
@@ -303,6 +334,78 @@ app.post('/api/call-me-back', rateLimiter, async (req, res) => {
 /* --------------------------------------------------------------------------
    STAFF & ADMIN AUTHENTICATION
    -------------------------------------------------------------------------- */
+const JWT_SECRET = process.env.JWT_SECRET || 'pr_dxb_prime_secret_key_2026_crm';
+
+function generateToken(user) {
+  const payload = {
+    id: user.id,
+    username: user.username,
+    fullName: user.fullName,
+    role: user.role,
+    agentId: user.agentId,
+    exp: Date.now() + (24 * 60 * 60 * 1000)
+  };
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', JWT_SECRET).update(data).digest('base64url');
+  return `${data}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [data, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(data).digest('base64url');
+  if (sig.length !== expectedSig.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+    if (payload.exp && Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// Authentication Middleware: rejects missing or invalid tokens
+function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+  const user = verifyToken(token);
+
+  if (!user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized: A valid staff authentication token is required.'
+    });
+  }
+
+  req.user = user;
+  next();
+}
+
+// Role Authorization Middleware: requires Director role
+function requireDirector(req, res, next) {
+  if (!req.user || req.user.role !== 'Director') {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden: Director authorization required.'
+    });
+  }
+  next();
+}
+
+// Helper to extract session user from verified token
+function getAuthUser(req) {
+  return req.user || {
+    role: 'Agent',
+    username: 'unauthenticated',
+    agentId: null,
+    fullName: 'Guest'
+  };
+}
+
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -315,28 +418,19 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({
       success: true,
       user,
-      token: 'jwt_simulated_' + Buffer.from(user.username + ':' + Date.now()).toString('base64')
+      token: generateToken(user)
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Helper to extract session user from headers
-function getAuthUser(req) {
-  const role = req.headers['x-user-role'] || 'Director';
-  const username = req.headers['x-user-username'] || 'admin';
-  const agentId = req.headers['x-user-agent-id'] ? Number(req.headers['x-user-agent-id']) : null;
-  const fullName = req.headers['x-user-fullname'] || 'Director';
-  return { role, username, agentId, fullName };
-}
-
 /* --------------------------------------------------------------------------
    ADMIN CRM ENDPOINTS (Leads, Notifications, Pipeline, Deals, Inventory)
    -------------------------------------------------------------------------- */
 
 // 1. Leads list with search, filters, and role-based visibility
-app.get('/api/admin/leads', async (req, res) => {
+app.get('/api/admin/leads', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const filters = req.query;
@@ -348,7 +442,7 @@ app.get('/api/admin/leads', async (req, res) => {
 });
 
 // 2. Single Lead Details with notes & viewing history
-app.get('/api/admin/leads/:ref', async (req, res) => {
+app.get('/api/admin/leads/:ref', requireAuth, async (req, res) => {
   try {
     const lead = await getLeadByRef(req.params.ref);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
@@ -359,7 +453,7 @@ app.get('/api/admin/leads/:ref', async (req, res) => {
 });
 
 // 3. Update Lead Stage (Pipeline Drag-and-Drop)
-app.put('/api/admin/leads/:ref/stage', async (req, res) => {
+app.put('/api/admin/leads/:ref/stage', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const { stage } = req.body;
@@ -371,8 +465,8 @@ app.put('/api/admin/leads/:ref/stage', async (req, res) => {
   }
 });
 
-// 4. Reassign Agent
-app.put('/api/admin/leads/:ref/assign', async (req, res) => {
+// 4. Reassign Agent (Director only)
+app.put('/api/admin/leads/:ref/assign', requireAuth, requireDirector, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const { agentId } = req.body;
@@ -385,7 +479,7 @@ app.put('/api/admin/leads/:ref/assign', async (req, res) => {
 });
 
 // 5. Add Note to Lead
-app.post('/api/admin/leads/:ref/notes', async (req, res) => {
+app.post('/api/admin/leads/:ref/notes', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const { noteText } = req.body;
@@ -399,7 +493,7 @@ app.post('/api/admin/leads/:ref/notes', async (req, res) => {
 });
 
 // 6. Complete Deal as "Won" (Calculates 2% commission & marks property as Sold)
-app.post('/api/admin/deals/complete-won', async (req, res) => {
+app.post('/api/admin/deals/complete-won', requireAuth, async (req, res) => {
   try {
     const { leadRef, propertyTitle, salePriceAED, buyerName, sellerName, agentId, closingDate } = req.body;
     if (!salePriceAED) return res.status(400).json({ success: false, message: 'Sale price required' });
@@ -425,7 +519,7 @@ app.post('/api/admin/deals/complete-won', async (req, res) => {
 });
 
 // 7. Notifications (Bell Icon Polling)
-app.get('/api/admin/notifications', async (req, res) => {
+app.get('/api/admin/notifications', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const notifications = await getNotifications(user);
@@ -435,7 +529,7 @@ app.get('/api/admin/notifications', async (req, res) => {
   }
 });
 
-app.post('/api/admin/notifications/mark-read', async (req, res) => {
+app.post('/api/admin/notifications/mark-read', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     await markNotificationsAsRead(user);
@@ -446,7 +540,7 @@ app.post('/api/admin/notifications/mark-read', async (req, res) => {
 });
 
 // 8. Analytics Dashboard & Charts
-app.get('/api/admin/analytics', async (req, res) => {
+app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const analytics = await getAdminAnalytics(user);
@@ -457,7 +551,7 @@ app.get('/api/admin/analytics', async (req, res) => {
 });
 
 // 9. Agent Leaderboard
-app.get('/api/admin/leaderboard', async (req, res) => {
+app.get('/api/admin/leaderboard', requireAuth, async (req, res) => {
   try {
     const leaderboard = await getAgentLeaderboard();
     res.json({ success: true, data: leaderboard });
@@ -467,7 +561,7 @@ app.get('/api/admin/leaderboard', async (req, res) => {
 });
 
 // 10. Viewings Schedule
-app.get('/api/admin/viewings', async (req, res) => {
+app.get('/api/admin/viewings', requireAuth, async (req, res) => {
   try {
     const user = getAuthUser(req);
     const viewings = await getAllViewings(user);
@@ -477,8 +571,8 @@ app.get('/api/admin/viewings', async (req, res) => {
   }
 });
 
-// 11. Property Inventory Management (CRUD)
-app.post('/api/admin/properties', async (req, res) => {
+// 11. Property Inventory Management (CRUD - Director Only)
+app.post('/api/admin/properties', requireAuth, requireDirector, async (req, res) => {
   try {
     const property = await createProperty(req.body);
     res.json({ success: true, message: 'Property created successfully', data: property });
@@ -487,7 +581,7 @@ app.post('/api/admin/properties', async (req, res) => {
   }
 });
 
-app.put('/api/admin/properties/:slug', async (req, res) => {
+app.put('/api/admin/properties/:slug', requireAuth, requireDirector, async (req, res) => {
   try {
     const property = await updateProperty(req.params.slug, req.body);
     if (!property) return res.status(404).json({ success: false, message: 'Property not found' });
@@ -497,7 +591,7 @@ app.put('/api/admin/properties/:slug', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/properties/:slug', async (req, res) => {
+app.delete('/api/admin/properties/:slug', requireAuth, requireDirector, async (req, res) => {
   try {
     const success = await deleteProperty(req.params.slug);
     if (!success) return res.status(404).json({ success: false, message: 'Property not found' });
@@ -507,8 +601,8 @@ app.delete('/api/admin/properties/:slug', async (req, res) => {
   }
 });
 
-// 12. Off-Plan Project Inventory Management (CRUD)
-app.post('/api/admin/offplan', async (req, res) => {
+// 12. Off-Plan Project Inventory Management (CRUD - Director Only)
+app.post('/api/admin/offplan', requireAuth, requireDirector, async (req, res) => {
   try {
     const project = await createOffplanProject(req.body);
     res.json({ success: true, message: 'Project created successfully', data: project });
@@ -517,7 +611,7 @@ app.post('/api/admin/offplan', async (req, res) => {
   }
 });
 
-app.put('/api/admin/offplan/:slug', async (req, res) => {
+app.put('/api/admin/offplan/:slug', requireAuth, requireDirector, async (req, res) => {
   try {
     const project = await updateOffplanProject(req.params.slug, req.body);
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
@@ -527,7 +621,7 @@ app.put('/api/admin/offplan/:slug', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/offplan/:slug', async (req, res) => {
+app.delete('/api/admin/offplan/:slug', requireAuth, requireDirector, async (req, res) => {
   try {
     const success = await deleteOffplanProject(req.params.slug);
     if (!success) return res.status(404).json({ success: false, message: 'Project not found' });
@@ -535,6 +629,15 @@ app.delete('/api/admin/offplan/:slug', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// Global error handling middleware (prevents stack trace disclosure)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ success: false, message: 'Invalid JSON request payload.' });
+  }
+  console.error('[SERVER ERROR]', err.message);
+  res.status(500).json({ success: false, message: 'An internal server error occurred.' });
 });
 
 if (!process.env.VERCEL) {

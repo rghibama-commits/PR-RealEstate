@@ -2,9 +2,8 @@ import {
   sampleDevelopers,
   sampleOffplanProjects,
   sampleProperties,
-  sampleAgents,
-  sampleStaffLogins
-} from '../server/seedData.js';
+  sampleAgents
+} from './data/publicData.js';
 
 import * as adminEngine from './admin.js';
 
@@ -55,6 +54,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Smooth luxury preloader dismissal
   setTimeout(hideLoader, 550);
+});
+
+// Keyboard accessibility for elements with role="button" (WCAG 2.2 AA)
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.getAttribute('role') === 'button') {
+    e.preventDefault();
+    e.target.click();
+  }
 });
 
 /* --------------------------------------------------------------------------

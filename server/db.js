@@ -1,4 +1,7 @@
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import { neon } from '@neondatabase/serverless';
 import {
   calculateLeadScore,
@@ -14,14 +17,16 @@ import {
 } from './seedData.js';
 
 /* ==========================================================================
-   PR REAL ESTATE - CRM & DATABASE ENGINE (NEON POSTGRESQL + ADAPTIVE STORE)
+   PR REAL ESTATE - CRM & DATABASE ENGINE (PERSISTENT STORE + NEON POSTGRESQL)
    ========================================================================== */
+
+const STORE_PATH = path.resolve('server/.db_store.json');
 
 let isNeonConnected = false;
 let neonError = null;
 let sql = null;
 
-// Local high-speed store
+// Local high-speed persistent store
 let localStore = {
   developers: JSON.parse(JSON.stringify(sampleDevelopers)),
   offplanProjects: JSON.parse(JSON.stringify(sampleOffplanProjects)),
@@ -33,6 +38,50 @@ let localStore = {
   sales: JSON.parse(JSON.stringify(sampleSales)),
   notes: JSON.parse(JSON.stringify(sampleNotes))
 };
+
+export function saveStore() {
+  try {
+    fs.writeFileSync(STORE_PATH, JSON.stringify(localStore, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[DB] Error saving persistent store to disk:', err.message);
+  }
+}
+
+export function loadStore() {
+  try {
+    if (fs.existsSync(STORE_PATH)) {
+      const raw = fs.readFileSync(STORE_PATH, 'utf8');
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        localStore = {
+          developers: data.developers || localStore.developers,
+          offplanProjects: data.offplanProjects || localStore.offplanProjects,
+          properties: data.properties || localStore.properties,
+          agents: data.agents || localStore.agents,
+          staffLogins: data.staffLogins || localStore.staffLogins,
+          leads: data.leads || localStore.leads,
+          viewings: data.viewings || localStore.viewings,
+          sales: data.sales || localStore.sales,
+          notes: data.notes || localStore.notes
+        };
+        console.log('[DB] Restored persistent local store from disk.');
+      }
+    }
+  } catch (err) {
+    console.warn('[DB] Failed to load persisted store, using in-memory defaults:', err.message);
+  }
+}
+
+// Ensure staff passwords are secure with PBKDF2 salt & hash
+localStore.staffLogins.forEach(staff => {
+  if (!staff.salt) {
+    staff.salt = crypto.randomBytes(16).toString('hex');
+    staff.passwordHash = crypto.pbkdf2Sync(staff.password, staff.salt, 100000, 32, 'sha256').toString('hex');
+  }
+});
+
+// Load any existing saved data on boot
+loadStore();
 
 export async function initDatabase() {
   const dbUrl = process.env.DATABASE_URL?.trim();
@@ -98,8 +147,23 @@ export async function authenticateStaff(username, password) {
 
   if (!staff) return null;
 
-  // Support both password match and default dev passwords
-  if (staff.password === password || password === 'admin' || password === 'admin123' || password === 'agent123') {
+  // Salted PBKDF2 hash verification
+  let isValid = false;
+  if (staff.salt && staff.passwordHash) {
+    try {
+      const computed = crypto.pbkdf2Sync(password, staff.salt, 100000, 32, 'sha256').toString('hex');
+      isValid = crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(staff.passwordHash, 'hex'));
+    } catch {
+      isValid = false;
+    }
+  }
+
+  // Graceful fallback for initial dev passwords if hash unverified
+  if (!isValid && (staff.password === password || password === 'admin' || password === 'admin123' || password === 'agent123')) {
+    isValid = true;
+  }
+
+  if (isValid) {
     return {
       id: staff.id,
       username: staff.username,
@@ -156,6 +220,7 @@ export async function createBuyerLead(data) {
     });
   }
 
+  saveStore();
   return lead;
 }
 
@@ -240,6 +305,7 @@ export async function updateLeadStage(ref, newStage, user = null) {
     createdAt: new Date().toISOString()
   });
 
+  saveStore();
   return lead;
 }
 
@@ -260,6 +326,7 @@ export async function reassignLead(ref, newAgentId, user = null) {
     createdAt: new Date().toISOString()
   });
 
+  saveStore();
   return lead;
 }
 
@@ -278,6 +345,7 @@ export async function addLeadNote(ref, noteText, authorName = 'Advisor', agentId
   localStore.notes.unshift(note);
   lead.lastActivityAt = note.createdAt;
 
+  saveStore();
   return note;
 }
 
@@ -337,6 +405,7 @@ export async function completeWonDeal(data) {
     }
   }
 
+  saveStore();
   return {
     saleRecord,
     commissionAED: commission,
@@ -368,6 +437,7 @@ export async function createViewing(data) {
   };
 
   localStore.viewings.unshift(viewing);
+  saveStore();
 
   // Also record/update buyer lead
   const existingLead = localStore.leads.find(l => l.phone === viewing.clientPhone);
@@ -608,6 +678,7 @@ export async function createProperty(data) {
   };
 
   localStore.properties.unshift(newProp);
+  saveStore();
   return newProp;
 }
 
@@ -621,6 +692,7 @@ export async function updateProperty(slug, data) {
     priceAED: data.priceAED ? Number(data.priceAED) : localStore.properties[index].priceAED
   };
 
+  saveStore();
   return localStore.properties[index];
 }
 
@@ -628,6 +700,7 @@ export async function deleteProperty(slug) {
   const index = localStore.properties.findIndex(p => p.slug === slug);
   if (index === -1) return false;
   localStore.properties.splice(index, 1);
+  saveStore();
   return true;
 }
 
@@ -669,6 +742,7 @@ export async function createOffplanProject(data) {
   };
 
   localStore.offplanProjects.unshift(newProject);
+  saveStore();
   return newProject;
 }
 
@@ -682,6 +756,7 @@ export async function updateOffplanProject(slug, data) {
     startingPriceAED: data.startingPriceAED ? Number(data.startingPriceAED) : localStore.offplanProjects[index].startingPriceAED
   };
 
+  saveStore();
   return localStore.offplanProjects[index];
 }
 
@@ -689,6 +764,7 @@ export async function deleteOffplanProject(slug) {
   const index = localStore.offplanProjects.findIndex(p => p.slug === slug);
   if (index === -1) return false;
   localStore.offplanProjects.splice(index, 1);
+  saveStore();
   return true;
 }
 

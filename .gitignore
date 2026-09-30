@@ -38,3 +38,6 @@ Thumbs.db
 .system_generated/
 scratch/
 coverage/
+.db_store.json
+server/.db_store.json
+*.pdf

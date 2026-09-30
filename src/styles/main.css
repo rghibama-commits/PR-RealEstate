@@ -13,6 +13,7 @@
   --color-lightgray: #E5E2DC;
   --color-gold: #B8975A;
   --color-gold-hover: #9E7F47;
+  --color-gold-text: #8C6D34; /* 4.6:1 WCAG 2.2 AA compliant contrast on white/offwhite */
   --color-gold-light: rgba(184, 151, 90, 0.12);
   --color-success: #2E7D32;
 
@@ -33,6 +34,18 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* Accessibility Focus Rings (WCAG 2.2 AA) */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(184, 151, 90, 0.25);
 }
 
 html {
