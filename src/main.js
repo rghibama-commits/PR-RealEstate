@@ -12,7 +12,7 @@ import * as adminEngine from './admin.js';
    PR REAL ESTATE - LUXURY MULTI-PAGE SPA APPLICATION
    ========================================================================== */
 
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = '/api';
 const THANK_YOU_MESSAGE = "Thank you. A PR Real Estate advisor will contact you within 24 hours.";
 let lastSubmitTimestamp = 0;
 

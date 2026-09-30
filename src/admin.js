@@ -2,7 +2,7 @@
    PR REAL ESTATE - EXECUTIVE CRM & ADMIN PORTAL ENGINE
    ========================================================================== */
 
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = '/api';
 
 // Format currency
 const formatAED = (amount) => {

@@ -537,6 +537,10 @@ app.delete('/api/admin/offplan/:slug', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`[PR Real Estate API] Running on http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`[PR Real Estate API] Running on http://localhost:${PORT}`);
+  });
+}
+
+export default app;
